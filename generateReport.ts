@@ -3,8 +3,6 @@ import fs from 'fs';
 import path from 'path';
 import { Roster } from './roster-model';
 
-type PosGroup = 'QB' | 'RB' | 'WR' | 'TE' | 'SUPER_FLEX' | 'FLEX' ;
-
 const ROSTERS_FILE = path.resolve(__dirname, 'rosters.json');
 const OUT_FILE = path.resolve(__dirname, 'team-report.md');
 
@@ -87,26 +85,29 @@ function compute() {
   // compute per-team per-position totals (starting slots only, exclude bench)
   // FLEX and SUPER_FLEX are separate and do not contribute to RB/WR/TE/QB totals
   const teamPosTotals: Record<number, Record<string, number>> = {};
+  const teamPosCounts: Record<number, Record<string, number>> = {};
   for (const r of rosters) {
     const ir = r.idealRoster as any;
     const totals: Record<string, number> = { QB: 0, RB: 0, WR: 0, TE: 0, FLEX: 0, SUPER_FLEX: 0 };
+    const counts: Record<string, number> = { QB: 0, RB: 0, WR: 0, TE: 0, FLEX: 0, SUPER_FLEX: 0 };
     if (ir) {
-      if (ir.QB && typeof ir.QB.avgPointsPerGame === 'number') totals.QB += ir.QB.avgPointsPerGame;
-      ['RB1', 'RB2'].forEach((k: any) => { if (ir[k]) totals.RB += (ir[k].avgPointsPerGame || 0); });
-      ['WR1', 'WR2', 'WR3'].forEach((k: any) => { if (ir[k]) totals.WR += (ir[k].avgPointsPerGame || 0); });
-      if (ir.TE && typeof ir.TE.avgPointsPerGame === 'number') totals.TE += ir.TE.avgPointsPerGame;
+      if (ir.QB && typeof ir.QB.avgPointsPerGame === 'number') { totals.QB += ir.QB.avgPointsPerGame; counts.QB += 1; }
+      ['RB1', 'RB2'].forEach((k: any) => { if (ir[k] && typeof ir[k].avgPointsPerGame === 'number') { totals.RB += ir[k].avgPointsPerGame; counts.RB += 1; } });
+      ['WR1', 'WR2', 'WR3'].forEach((k: any) => { if (ir[k] && typeof ir[k].avgPointsPerGame === 'number') { totals.WR += ir[k].avgPointsPerGame; counts.WR += 1; } });
+      if (ir.TE && typeof ir.TE.avgPointsPerGame === 'number') { totals.TE += ir.TE.avgPointsPerGame; counts.TE += 1; }
       // FLEX slots go to FLEX total only
       ['FLEX1', 'FLEX2'].forEach((k: any) => {
         const p = ir[k];
         if (!p) return;
-        totals.FLEX += p.avgPointsPerGame || 0;
+        if (typeof p.avgPointsPerGame === 'number') { totals.FLEX += p.avgPointsPerGame; counts.FLEX += 1; }
       });
       // SUPER_FLEX goes to SUPER_FLEX total only
       if (ir.SUPER_FLEX) {
-        totals.SUPER_FLEX += ir.SUPER_FLEX.avgPointsPerGame || 0;
+        if (typeof ir.SUPER_FLEX.avgPointsPerGame === 'number') { totals.SUPER_FLEX += ir.SUPER_FLEX.avgPointsPerGame; counts.SUPER_FLEX += 1; }
       }
     }
     teamPosTotals[r.id] = totals;
+    teamPosCounts[r.id] = counts;
   }
 
   // for each pos, create sorted ranking (include FLEX and SUPER_FLEX)
@@ -116,6 +117,42 @@ function compute() {
     arr.sort((a, b) => b.val - a.val);
     posRankings[pos] = arr.map(a => a.id);
   }
+
+  // compute ideal roster total per team (sum of starting slots excluding bench)
+  const teamIdealTotals: Record<number, number> = {};
+  for (const r of rosters) {
+    const t = teamPosTotals[r.id] || { QB: 0, RB: 0, WR: 0, TE: 0, FLEX: 0, SUPER_FLEX: 0 };
+    const total = (t.QB || 0) + (t.RB || 0) + (t.WR || 0) + (t.TE || 0) + (t.FLEX || 0) + (t.SUPER_FLEX || 0);
+    teamIdealTotals[r.id] = total;
+  }
+  const idealTotalsSorted = [...rosters].map(r => ({ id: r.id, total: teamIdealTotals[r.id] || 0 })).sort((a, b) => b.total - a.total);
+
+  function rankIdealIn(id: number) {
+    return idealTotalsSorted.findIndex(x => x.id === id) + 1;
+  }
+
+  // --- New: compute AVG Bench Player Score Distance per team ---
+  // For the 5 bench players, compute average of (benchPlayer.avgPointsPerGame - avgByPos[benchPos])
+  // If bench has fewer than 5 players, average over however many are present. Missing avgByPos for a position will treat that position average as 0.
+  const benchDistanceByTeam: Record<number, number> = {};
+  for (const r of rosters) {
+    const ir = r.idealRoster as any;
+    const bench = (ir && Array.isArray(ir.BENCH)) ? ir.BENCH.slice(0, 5) : [];
+    const diffs: number[] = [];
+    for (const bp of bench) {
+      const bpos = (bp.positions && bp.positions[0]) || 'UNK';
+      const posKey = (bpos === 'FLEX' || bpos === 'SUPER_FLEX') ? bpos : bpos; // keep as-is
+      const leagueAvg = typeof avgByPos[posKey] === 'number' ? avgByPos[posKey] : 0;
+      const val = (typeof bp.avgPointsPerGame === 'number' ? bp.avgPointsPerGame : 0) - leagueAvg;
+      diffs.push(val);
+    }
+    benchDistanceByTeam[r.id] = diffs.length > 0 ? diffs.reduce((a, b) => a + b, 0) / diffs.length : 0;
+  }
+
+  // rank teams by bench distance
+  const benchRanking = [...rosters].map(r => ({ id: r.id, val: benchDistanceByTeam[r.id] || 0 })).sort((a, b) => b.val - a.val);
+  const benchRankByTeam: Record<number, number> = {};
+  benchRanking.forEach((x, idx) => { benchRankByTeam[x.id] = idx + 1; });
 
   // helper to get pos rank
   function getPosRank(teamId: number, pos: string) {
@@ -171,10 +208,32 @@ function compute() {
       for (const sl of slotLines) lines.push(`- ${sl}`);
     }
 
-    // position ranks for this team (now includes FLEX and SUPER_FLEX)
+    // position totals and averages for this team
+    const totals = teamPosTotals[r.id];
+    const counts = teamPosCounts[r.id];
     lines.push('');
-    lines.push(`Position Ranks: QB Rank - ${getPosRank(r.id, 'QB')}, RB Rank - ${getPosRank(r.id, 'RB')}, WR Rank - ${getPosRank(r.id, 'WR')}, TE Rank - ${getPosRank(r.id, 'TE')}, FLEX Rank - ${getPosRank(r.id, 'FLEX')}, SUPER_FLEX Rank - ${getPosRank(r.id, 'SUPER_FLEX')}`);
-    lines.push('');
+    lines.push('Position totals and averages:');
+    for (const pos of ['QB', 'RB', 'WR', 'TE', 'FLEX', 'SUPER_FLEX']) {
+      const total = totals[pos] || 0;
+      const count = counts[pos] || 0;
+      const average = count > 0 ? total / count : 0;
+      lines.push(`- ${pos}: Total = ${formatNum(total)}, Count = ${count}, Average = ${formatNum(average)}`);
+    }
+
+  // AVG Bench Player Score Distance and rank
+  const benchMetric = benchDistanceByTeam[r.id] || 0;
+  const benchRank = benchRankByTeam[r.id] || 0;
+  lines.push('');
+  lines.push(`AVG Bench Player Score Distance: ${formatNum(benchMetric)} (Rank ${benchRank})`);
+
+  // position ranks for this team (now includes FLEX and SUPER_FLEX)
+  lines.push('');
+  lines.push(`Position Ranks: QB Rank - ${getPosRank(r.id, 'QB')}, RB Rank - ${getPosRank(r.id, 'RB')}, WR Rank - ${getPosRank(r.id, 'WR')}, TE Rank - ${getPosRank(r.id, 'TE')}, FLEX Rank - ${getPosRank(r.id, 'FLEX')}, SUPER_FLEX Rank - ${getPosRank(r.id, 'SUPER_FLEX')}`);
+  // ideal roster total and rank
+  const idealTotal = teamIdealTotals[r.id] || 0;
+  const idealRank = rankIdealIn(r.id);
+  lines.push(`Ideal roster total (starting slots): ${formatNum(idealTotal)} (Rank ${idealRank})`);
+  lines.push('');
   }
 
   fs.writeFileSync(OUT_FILE, lines.join('\n'));
