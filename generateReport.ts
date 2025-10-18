@@ -1,10 +1,11 @@
-// ...existing code...
 import fs from 'fs';
 import path from 'path';
 import { Roster } from './roster-model';
 
 const ROSTERS_FILE = path.resolve(__dirname, 'rosters.json');
 const OUT_FILE = path.resolve(__dirname, 'team-report.md');
+const OUT_JSON = path.resolve(__dirname, 'team-report.json');
+const OUT_CSV = path.resolve(__dirname, 'team-report.csv');
 
 function readRosters(): Roster[] {
   const raw = fs.readFileSync(ROSTERS_FILE, 'utf8');
@@ -173,13 +174,15 @@ function compute() {
   }
   lines.push('');
 
+  const teamObjects: any[] = [];
+
   for (const r of rosters) {
     lines.push(`## ${r.name}`);
     const pfRank = rankIn(pointsForSorted, r.id);
     const mpRank = rankIn(maxPointsSorted, r.id);
     const pctRank = rankPctIn(percentMaxSorted, r.id);
     const paRank = rankIn(pointsAgainstSorted, r.id);
-    const pct = (r.pointsFor / (r.maxPoints || 1)) * 100;
+  const pct = (r.pointsFor / (r.maxPoints || 1)) * 100;
 
     lines.push(`Points For: ${formatNum(r.pointsFor)} (Rank ${pfRank})`);
     lines.push(`Max Points: ${formatNum(r.maxPoints)} (Rank ${mpRank})`);
@@ -220,25 +223,128 @@ function compute() {
       lines.push(`- ${pos}: Total = ${formatNum(total)}, Count = ${count}, Average = ${formatNum(average)}`);
     }
 
-  // AVG Bench Player Score Distance and rank
-  const benchMetric = benchDistanceByTeam[r.id] || 0;
-  const benchRank = benchRankByTeam[r.id] || 0;
-  lines.push('');
-  lines.push(`AVG Bench Player Score Distance: ${formatNum(benchMetric)} (Rank ${benchRank})`);
+    // AVG Bench Player Score Distance and rank
+    const benchMetric = benchDistanceByTeam[r.id] || 0;
+    const benchRank = benchRankByTeam[r.id] || 0;
+    lines.push('');
+    lines.push(`AVG Bench Player Score Distance: ${formatNum(benchMetric)} (Rank ${benchRank})`);
+
+  // ideal roster total and rank (needed for team object)
+  const idealTotal = teamIdealTotals[r.id] || 0;
+  const idealRank = rankIdealIn(r.id);
+
+  // collect structured object for this team for JSON/CSV export
+  const teamObj: any = {
+      id: r.id,
+      name: r.name,
+      pointsFor: r.pointsFor,
+      pointsForRank: pfRank,
+      maxPoints: r.maxPoints,
+      maxPointsRank: mpRank,
+      percentOfMax: pct,
+      percentOfMaxRank: pctRank,
+      pointsAgainst: r.pointsAgainst,
+      pointsAgainstRank: paRank,
+      avgBenchDistance: benchMetric,
+      avgBenchDistanceRank: benchRank,
+  idealTotal: idealTotal,
+  idealRank: idealRank,
+      positionTotals: totals,
+      positionCounts: counts,
+      positionAverages: {
+        QB: counts.QB ? totals.QB / counts.QB : 0,
+        RB: counts.RB ? totals.RB / counts.RB : 0,
+        WR: counts.WR ? totals.WR / counts.WR : 0,
+        TE: counts.TE ? totals.TE / counts.TE : 0,
+        FLEX: counts.FLEX ? totals.FLEX / counts.FLEX : 0,
+        SUPER_FLEX: counts.SUPER_FLEX ? totals.SUPER_FLEX / counts.SUPER_FLEX : 0,
+      },
+      positionRanks: {
+        QB: getPosRank(r.id, 'QB'),
+        RB: getPosRank(r.id, 'RB'),
+        WR: getPosRank(r.id, 'WR'),
+        TE: getPosRank(r.id, 'TE'),
+        FLEX: getPosRank(r.id, 'FLEX'),
+        SUPER_FLEX: getPosRank(r.id, 'SUPER_FLEX'),
+      }
+    };
+    teamObjects.push(teamObj);
 
   // position ranks for this team (now includes FLEX and SUPER_FLEX)
   lines.push('');
   lines.push(`Position Ranks: QB Rank - ${getPosRank(r.id, 'QB')}, RB Rank - ${getPosRank(r.id, 'RB')}, WR Rank - ${getPosRank(r.id, 'WR')}, TE Rank - ${getPosRank(r.id, 'TE')}, FLEX Rank - ${getPosRank(r.id, 'FLEX')}, SUPER_FLEX Rank - ${getPosRank(r.id, 'SUPER_FLEX')}`);
-  // ideal roster total and rank
-  const idealTotal = teamIdealTotals[r.id] || 0;
-  const idealRank = rankIdealIn(r.id);
   lines.push(`Ideal roster total (starting slots): ${formatNum(idealTotal)} (Rank ${idealRank})`);
   lines.push('');
   }
-
   fs.writeFileSync(OUT_FILE, lines.join('\n'));
   console.log(`Wrote report to ${OUT_FILE}`);
+
+  // write JSON export
+  try {
+    fs.writeFileSync(OUT_JSON, JSON.stringify(teamObjects, null, 2));
+    console.log(`Wrote JSON report to ${OUT_JSON}`);
+  } catch (e) {
+    console.error('Failed to write JSON report', e);
+  }
+
+  // write CSV export (flatten selected fields)
+  try {
+    const headers = [
+      'id','name','pointsFor','pointsForRank','maxPoints','maxPointsRank','percentOfMax','percentOfMaxRank','pointsAgainst','pointsAgainstRank','avgBenchDistance','avgBenchDistanceRank','idealTotal','idealRank',
+      'QB_total','RB_total','WR_total','TE_total','FLEX_total','SUPER_FLEX_total',
+      'QB_count','RB_count','WR_count','TE_count','FLEX_count','SUPER_FLEX_count',
+      'QB_avg','RB_avg','WR_avg','TE_avg','FLEX_avg','SUPER_FLEX_avg',
+      'QB_rank','RB_rank','WR_rank','TE_rank','FLEX_rank','SUPER_FLEX_rank'
+    ];
+    const rows = [headers.join(',')];
+    for (const t of teamObjects) {
+      const row = [
+        t.id,
+        `"${(t.name || '').replace(/"/g, '""')}"`,
+        t.pointsFor,
+        t.pointsForRank,
+        t.maxPoints,
+        t.maxPointsRank,
+        t.percentOfMax,
+        t.percentOfMaxRank,
+        t.pointsAgainst,
+        t.pointsAgainstRank,
+        t.avgBenchDistance,
+        t.avgBenchDistanceRank,
+        t.idealTotal,
+        t.idealRank,
+        t.positionTotals.QB || 0,
+        t.positionTotals.RB || 0,
+        t.positionTotals.WR || 0,
+        t.positionTotals.TE || 0,
+        t.positionTotals.FLEX || 0,
+        t.positionTotals.SUPER_FLEX || 0,
+        t.positionCounts.QB || 0,
+        t.positionCounts.RB || 0,
+        t.positionCounts.WR || 0,
+        t.positionCounts.TE || 0,
+        t.positionCounts.FLEX || 0,
+        t.positionCounts.SUPER_FLEX || 0,
+        t.positionAverages.QB || 0,
+        t.positionAverages.RB || 0,
+        t.positionAverages.WR || 0,
+        t.positionAverages.TE || 0,
+        t.positionAverages.FLEX || 0,
+        t.positionAverages.SUPER_FLEX || 0,
+        t.positionRanks.QB || 0,
+        t.positionRanks.RB || 0,
+        t.positionRanks.WR || 0,
+        t.positionRanks.TE || 0,
+        t.positionRanks.FLEX || 0,
+        t.positionRanks.SUPER_FLEX || 0
+      ];
+      rows.push(row.join(','));
+    }
+    fs.writeFileSync(OUT_CSV, rows.join('\n'));
+    console.log(`Wrote CSV report to ${OUT_CSV}`);
+  } catch (e) {
+    console.error('Failed to write CSV report', e);
+  }
 }
 
 compute();
-// ...existing code...

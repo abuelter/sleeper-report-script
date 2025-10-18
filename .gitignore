@@ -1,6 +1,9 @@
-#Generated Report
+# Generated Report
 team-report.md
-# Generated Roster.json
+# Generated json files
 rosters.json
+team-report.json
+# Generated CSV files
+team-report.csv
 # Node modules
 node_modules/
