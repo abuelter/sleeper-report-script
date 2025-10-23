@@ -38,12 +38,16 @@ async function getPlayersFromSleeperRoster(sleeperRoster: SleeperRoster): Promis
     for (const playerId of sleeperRoster.players) {
         const sleeperPlayer = await getPlayer(playerId);
         if (sleeperPlayer) {
+            // Normalize positions: treat 'DB' as 'WR' for the rare DB/WR dual listing (e.g., Travis Hunter)
+            const rawPositions: string[] = sleeperPlayer.player.fantasy_positions || [];
+            const positions = rawPositions.map(pos => pos === 'DB' ? 'WR' : pos);
+
             const player: Player = {
                 name: `${sleeperPlayer.player.first_name} ${sleeperPlayer.player.last_name}`,
                 gamesPlayed: sleeperPlayer.stats.gp || 0,
                 half_ppr_points: sleeperPlayer.stats.pts_half_ppr || 0,
                 playerId: sleeperPlayer.player_id,
-                positions: sleeperPlayer.player.fantasy_positions,
+                positions,
                 avgPointsPerGame: sleeperPlayer.stats.gp === 0 ? 0 : (sleeperPlayer.stats.pts_half_ppr || 0) / sleeperPlayer.stats.gp,
             };
             playerArray.push(player);
@@ -129,10 +133,24 @@ function computeIdealRoster(roster: Roster): IdealRoster {
     if (flex2.playerId) used.add(flex2.playerId);
 
     // BENCH: next 5 highest scoring players not assigned yet
+    // Limit QBs on the bench to at most 1 because multiple bench QBs distort the bench metric
     const remaining = [...players]
         .filter(p => !used.has(p.playerId))
         .sort((a, b) => (b.avgPointsPerGame || 0) - (a.avgPointsPerGame || 0));
-    const BENCH = remaining.slice(0, 5).map(p => p || createEmptyPlayer());
+
+    const BENCH: Player[] = [];
+    let qbCount = 0;
+    for (const p of remaining) {
+        if (BENCH.length >= 5) break;
+        const isQB = p.positions && p.positions.includes('QB');
+        if (isQB) {
+            if (qbCount >= 1) continue; // skip extra QBs beyond the first
+            qbCount++;
+            BENCH.push(p || createEmptyPlayer());
+        } else {
+            BENCH.push(p || createEmptyPlayer());
+        }
+    }
 
     return {
         QB: qb,
